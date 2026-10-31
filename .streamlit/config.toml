@@ -1,0 +1,25 @@
+# Matches the PatchPilot landing page design tokens. Loaded when launching from the checkout root.
+[theme]
+base = "dark"
+primaryColor = "#0b57c9"
+backgroundColor = "#07090d"
+secondaryBackgroundColor = "#0d121a"
+textColor = "#c8ccd4"
+borderColor = "#252a34"
+linkColor = "#74aefb"
+codeBackgroundColor = "#0b0f15"
+blueColor = "#74aefb"
+greenColor = "#64d2a4"
+redColor = "#f07d75"
+orangeColor = "#f6b854"
+yellowColor = "#f6b854"
+grayColor = "#9aa8c2"
+font = "Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+headingFont = "'Iowan Old Style', 'Palatino Linotype', Palatino, Baskerville, 'Times New Roman', serif"
+codeFont = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace"
+headingFontWeights = 400
+baseRadius = "1px"
+showWidgetBorder = true
+
+[client]
+toolbarMode = "minimal"
