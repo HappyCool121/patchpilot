@@ -1,60 +1,77 @@
-import unittest
+"""HTML chrome: tracker states, verdict tones and escaping."""
 
-from patchpilot import view
+import json
 
+import pytest
 
-def run_with(state, **overrides):
-    run = {"id": "run-id", "state": state, "sandbox_id": "sandbox-id", "trace": None,
-           "cleanup_error": None, "cleanup_complete": True}
-    return {**run, **overrides}
+from patchpilot import core, view
 
-
-class TrackerTests(unittest.TestCase):
-    def test_step_states_for_each_path(self):
-        cases = {
-            (): ["pending"] * 4,
-            ("REPRODUCING", "PROPOSING"): ["done", "active", "pending", "pending"],
-            ("REPRODUCING", "PROPOSING", "APPLYING", "VERIFYING", "VERIFIED"): ["done"] * 4,
-            ("REPRODUCING", "PROPOSING", "APPLYING", "VERIFYING", "NOT_VERIFIED"):
-                ["done", "done", "done", "warn"],
-            ("REPRODUCING", "NO_FAILURE_REPRODUCED"): ["done", "skipped", "skipped", "skipped"],
-            ("REPRODUCING", "ERROR"): ["failed", "skipped", "skipped", "skipped"],
-            ("REPRODUCING", "PROPOSING", "APPLYING", "ERROR"): ["done", "done", "failed", "skipped"],
-        }
-        for stages, expected in cases.items():
-            with self.subTest(stages=stages):
-                self.assertEqual(view.step_states(list(stages)), expected)
-
-    def test_tracker_renders_every_step(self):
-        html = view.stage_tracker(["REPRODUCING"])
-        self.assertEqual(html.count('role="listitem"'), 4)
-        self.assertIn("pp-step--active", html)
+FULL = ["reproducing", "investigating", "proposing", "applying", "verifying", "done"]
+NO_GRAPH = ["reproducing", "proposing", "applying", "verifying", "done"]
 
 
-class VerdictTests(unittest.TestCase):
-    def test_every_state_has_a_tone(self):
-        for state, tone in (("VERIFIED", "verified"), ("NOT_VERIFIED", "not-verified"),
-                            ("NO_FAILURE_REPRODUCED", "no-failure"), ("ERROR", "error")):
-            with self.subTest(state=state):
-                self.assertIn(f"pp-verdict--{tone}", view.verdict_banner(run_with(state)))
-
-    def test_dynamic_values_are_escaped(self):
-        hostile = "<img src=x onerror=alert(1)>"
-        html = view.verdict_banner(run_with("VERIFIED", sandbox_id=hostile, trace={"model": hostile}))
-        html += view.provider_chips({"Nosana model": hostile, "Daytona error": hostile})
-        self.assertNotIn("<img", html)
-        self.assertIn("&lt;img", html)
-
-    def test_cleanup_status(self):
-        self.assertIn("complete", view.verdict_banner(run_with("VERIFIED")))
-        failed = view.verdict_banner(run_with("VERIFIED", cleanup_error="x", cleanup_complete=False))
-        self.assertIn("failed", failed)
-
-    def test_exit_chip_tones(self):
-        self.assertIn("pp-exit--pass", view.exit_chip(0))
-        self.assertIn("pp-exit--fail", view.exit_chip(1))
-        self.assertIn("pp-exit--error", view.exit_chip(None))
+@pytest.mark.parametrize("stages, verdict, graph_status, expected", [
+    ([], None, "", ["pending"] * 5),
+    (["reproducing", "reproducing"], None, "", ["active"] + ["pending"] * 4),
+    (["reproducing", "proposing"], None, "", ["done", "optional", "active", "pending", "pending"]),
+    (FULL, core.VERIFIED, "connected: 3 related row(s) found", ["done"] * 5),
+    (NO_GRAPH, core.VERIFIED, "not configured (repair continues without graph context)",
+     ["done", "optional", "done", "done", "done"]),
+    (FULL, core.VERIFIED, "unavailable (ServiceUnavailable: x); repair continues",
+     ["done", "warn", "done", "done", "done"]),
+    (NO_GRAPH, core.NOT_VERIFIED, "not configured", ["done", "optional", "done", "done", "warn"]),
+    (["reproducing", "done"], core.NO_FAILURE, "not used", ["done"] + ["skipped"] * 4),
+    (["reproducing", "done"], core.ERROR, "not used", ["failed"] + ["skipped"] * 4),
+    (["reproducing", "proposing", "done"], core.ERROR, "not configured",
+     ["done", "optional", "failed", "skipped", "skipped"]),
+])
+def test_step_states(stages, verdict, graph_status, expected):
+    assert view.step_states(stages, verdict, graph_status) == expected
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_tracker_renders_every_step():
+    html = view.stage_tracker(["reproducing"])
+    assert html.count('role="listitem"') == 5 and "pp-step--active" in html
+
+
+def make_run(**overrides):
+    run = core.Run(model="test-model", sandbox_id="sandbox-id", cleanup="sandbox deleted",
+                   graph_status="not configured (repair continues without graph context)")
+    for key, value in overrides.items():
+        setattr(run, key, value)
+    return run
+
+
+@pytest.mark.parametrize("verdict, tone", [
+    (core.VERIFIED, "verified"), (core.NOT_VERIFIED, "not-verified"),
+    (core.NO_FAILURE, "no-failure"), (core.ERROR, "error"), (None, "error")])
+def test_verdict_tones(verdict, tone):
+    assert f"pp-verdict--{tone}" in view.verdict_banner(make_run(verdict=verdict))
+
+
+def test_dynamic_values_are_escaped():
+    hostile = "<img src=x onerror=alert(1)>"
+    html = view.verdict_banner(make_run(verdict=core.VERIFIED, sandbox_id=hostile, model=hostile))
+    html += view.provider_chips([("Nosana", "error", hostile)])
+    assert "<img" not in html and "&lt;img" in html
+
+
+def test_cleanup_and_graph_summary():
+    html = view.verdict_banner(make_run(verdict=core.VERIFIED))
+    assert "sandbox deleted" in html and "not configured" in html
+    failed = view.verdict_banner(make_run(verdict=core.VERIFIED, cleanup="CLEANUP FAILED (X); delete"))
+    assert "<b>Cleanup</b>failed" in failed
+
+
+def test_exit_chip_tones():
+    assert "pp-exit--pass" in view.exit_chip(0)
+    assert "pp-exit--fail" in view.exit_chip(1)
+    assert "pp-exit--error" in view.exit_chip(None)
+
+
+def test_run_evidence_is_json_and_skips_callback():
+    run = make_run(verdict=core.VERIFIED, on_event=lambda *a: None)
+    run.log("done", "Verdict: VERIFIED")
+    evidence = view.run_evidence(run)
+    assert "on_event" not in evidence
+    assert json.loads(json.dumps(evidence))["verdict"] == core.VERIFIED

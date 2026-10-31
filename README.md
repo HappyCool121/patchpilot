@@ -1,91 +1,93 @@
 # PatchPilot
 
-Implementation of [spec V1.1](mvp.md): one Streamlit screen, one seeded discount
-bug, one real Nosana repair request, and verification inside a fresh Daytona sandbox.
-There is no database, API service, retry loop or simulated provider mode.
+From a failing test to an AI-proposed, sandbox-verified patch, with the evidence visible.
 
-## Setup and launch
+PatchPilot runs one complete repair cycle on a prepared Python fixture: **Daytona** reproduces
+the failing tests in an isolated sandbox, **Neo4j** (optional) maps the failing tests to the code
+they exercise, a model served by **Nosana** proposes a small structured fix, PatchPilot validates
+and applies it inside the sandbox, and Daytona reruns the same unchanged tests. The verdict comes
+from the test results, never from the model. The spec is in [mvp.md](mvp.md).
+
+The repair engine (`patchpilot/core.py`, fixture and `tests/test_core.py`) is ported unchanged
+from [Viamance/patchpilot67](https://github.com/Viamance/patchpilot67); the one-screen UI is
+styled to match the PatchPilot landing page.
+
+## Setup
 
 Requires Python 3.12+. From the checkout root:
 
 ```sh
 python -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e '.[test]'
 ```
 
-Set `DAYTONA_API_KEY` and `NOSANA_API_KEY` in your server environment. The Nosana key
-needs `inference:use` permission and usable credits. See `.env.example` for optional
-model and snapshot settings. Values are not loaded automatically from `.env`;
-`.env` is gitignored, so you can keep keys there and export them at launch.
-Never commit keys or enter them in a public UI.
+Copy `.env.example` to `.env` (gitignored; loaded automatically) and fill in:
+
+- `DAYTONA_API_KEY`: from app.daytona.io/dashboard/keys
+- `NOSANA_API_KEY`: from deploy.nosana.com, needs `inference:use` permission and usable credits
+- `NOSANA_MODEL` (optional): preselected in the model picker; `qwen/qwen3.8-27b` is known to work
+- `DAYTONA_TARGET` (optional): `us` (default) or `eu`
+- `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` (optional): an AuraDB Free instance works.
+  Without them the repair runs without graph context.
+
+Never commit `.env`.
+
+## Run
 
 ```sh
-set -a; source .env; set +a
 .venv/bin/streamlit run patchpilot/ui.py --server.address 127.0.0.1
 ```
 
-The dark theme matching the landing page lives in `.streamlit/config.toml` and loads when
-launching from the checkout root; `patchpilot/static/style.css` adds the remaining styling.
+The dark theme lives in `.streamlit/config.toml` and loads when launching from the checkout root;
+`patchpilot/static/style.css` adds the remaining styling. Pick a currently served Nosana chat model
+(embedding and reranking models are filtered out), then click **Repair demo bug**. Keep the app on
+loopback, or authenticate access before exposing a server that spends provider credits.
 
-The app checks the Nosana model list and Daytona read-only API access when keys are
-present. These checks do not prove a sandbox can run or inference credits are usable;
-the run itself provides that evidence. Set `NOSANA_MODEL` to a chat model. Otherwise
-the first advertised model is tried, and Nosana currently lists the embedding model
-`nvidia/nemotron-3-embed-1b` first, which fails with `400 Bad Request` on chat
-completions. The working demo uses `NOSANA_MODEL=qwen/qwen3.8-27b`. Incompatible or
-unavailable chat models surface as errors. Provider checks can be refreshed in the UI.
+## How it works
 
-Press **Repair demo bug**. The original fixture is uploaded to a fresh sandbox,
-pytest 8.3.5 is installed there, and `python -m pytest -q` captures the baseline.
-Nosana receives bounded implementation, read-only tests and failing output.
-Only one nonempty, exact-match replacement in `discount.py` is accepted. Tests
-remain unchanged. The identical command reruns after application. Provider calls
-and sandbox commands have finite timeouts; there is no automatic model retry.
-Sandbox deletion is attempted on every exit path. Cleanup failures are displayed
-separately with the sandbox ID for manual cleanup in Daytona.
+1. A fresh Daytona sandbox receives `patchpilot/fixture/pricing.py` and `test_pricing.py`.
+2. Baseline: `python -m pytest -q` (pytest is installed in the sandbox if missing). Exit 0 stops
+   with **NO FAILURE REPRODUCED**; any code other than 1 is an **ERROR**.
+3. Neo4j (optional): the fixture's files, functions, imports and test targets are read with
+   Python's `ast` module and stored as `(File)-[:DEFINES]->(Function)`,
+   `(File)-[:IMPORTS]->(File)` and `(Test)-[:TARGETS]->(Function)`; each failing test becomes
+   `(Failure)-[:OCCURS_IN]->(Test)`. One Cypher query returns each failing test, the function it
+   targets, its file, and how many verified repairs that file has had. The query and rows are shown
+   on screen and added to the model prompt. After the rerun, `(Repair)-[:MODIFIES]->(File)` and
+   `(Repair)-[:ADDRESSES]->(Failure)` record the outcome. If Neo4j is missing or fails, the run
+   continues and says so.
+4. One Nosana request returns JSON with `diagnosis`, `explanation` and one edit (`path`, `old`,
+   `new`). Markdown fences around the JSON are tolerated.
+5. The edit is rejected unless it targets `pricing.py` only, is non-empty, and its `old` snippet
+   matches exactly once. Tests are never modified, and no model-supplied command is ever run.
+6. The edit is applied inside the sandbox, the original tests are re-uploaded, and the same command
+   reruns.
+7. Exit 0 is **VERIFIED**, exit 1 is **NOT VERIFIED**, anything else is **ERROR**. The sandbox is
+   deleted on every path, and a cleanup failure is reported separately with the sandbox ID.
 
-The app preserves diagnosis, diff, model ID and request/response, command output,
-exit codes and verdict in the latest Streamlit session run. Download evidence
-before starting another run or closing the session. Keys stay on the server and
-known configured values are redacted from displayed evidence. No secrets are
-uploaded into the sandbox. Generated code never runs on the app host.
+The local fixture file is only read, never written, so every run starts from the original bug.
+The screen shows a five-step tracker, the verdict, Neo4j context, the diagnosis and diff, and the
+before/after test output; **Download run evidence** saves every recorded field as JSON.
 
-The fixture deliberately uses a wrong discount formula. Its read-only tests cover
-normal, zero and full discounts. A new manual run always uploads the original
-defect. `VERIFIED` requires baseline exit 1, an applied patch and rerun exit 0.
-Still-failing tests produce `NOT VERIFIED`; a passing baseline stops without inference.
-Other pytest exit codes, zero-test runs, provider failures and malformed edits are
-errors. Passing the designated tests does not establish general correctness.
+**Seeded demo defect:** `apply_discount` returns the discount amount instead of the discounted price.
 
-Network access is required to Daytona and `inference.nosana.com`, and from Daytona
-to PyPI. TLS verification must remain enabled. For development, keep the app on
-loopback; authenticate access before exposing a server that spends provider credits.
-
-## Tests and implementation status
+## Tests
 
 ```sh
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -q
 ```
 
-Run the tests in a shell without `.env` exported: with `NOSANA_MODEL` set,
-`test_nosana_empty_model_list` fails because the configured model check runs first.
+`tests/test_core.py` covers proposal validation, verdict mapping and the full run flow against a
+local fake sandbox (real pytest, fake providers), including Neo4j failing at each step.
+`tests/test_view.py` covers the tracker states, verdict styling and HTML escaping, and
+`tests/test_ui.py` renders the screen with Streamlit's AppTest for each verdict. They test the
+logic only; they are not evidence of live Daytona, Nosana or Neo4j integration.
 
-Unit tests use explicitly labeled provider doubles for verdicts, patch constraints,
-unchanged tests, cleanup, errors and the one-attempt limit. Adapter tests use HTTP
-and SDK doubles; these do not establish live sponsor integration success.
+## Integration status
 
-The stable Daytona SDK is pinned and its interfaces checked against the installed
-version. Live acceptance and the required recorded walkthrough need valid provider
-credentials. No genuine end-to-end repair or video is claimed by the offline tests.
+- Daytona and Nosana: this engine completed a live end-to-end run (VERIFIED) in patchpilot67.
+  A live rerun of the ported engine in this repository is pending.
+- Neo4j: implemented as optional graph context, added after the MVP spec (mvp.md lists it as
+  deferred); live run pending verification.
 
-**Live status (31 October 2026):** a manual run against real Daytona and Nosana
-(`qwen/qwen3.8-27b`) completed the full repair cycle and was reported working by the
-operator. Run evidence was not saved to the repository. Two issues found during
-live runs are fixed or documented here: the default model selection picking an
-embedding model (set `NOSANA_MODEL`), and the model returning `edits` as a single
-object rather than a one-item list (the prompt now specifies the array shape).
-
-Still to do before submission: save the evidence from a real repair, record a
-credential-free 90–120-second walkthrough, and check the non-fix, invalid edit,
-provider failure and already-passing baseline paths live.
-Product deployment and a landing page are deferred by the spec.
+VERIFIED means the designated tests passed after the patch; it does not prove arbitrary code is correct.

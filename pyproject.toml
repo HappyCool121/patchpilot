@@ -7,7 +7,16 @@ name = "patchpilot"
 version = "0.1.0"
 description = "Review-first, sandbox-verified Python repair"
 requires-python = ">=3.12"
-dependencies = ["streamlit>=1.50,<2", "httpx>=0.28,<1", "daytona==0.227.0"]
+dependencies = [
+    "streamlit>=1.50,<2",
+    "daytona==0.227.0",
+    "openai>=3.42",
+    "neo4j>=6.4",
+    "python-dotenv>=1.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
 
 [tool.setuptools.package-data]
 patchpilot = ["static/*", "fixture/*"]
