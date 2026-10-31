@@ -15,17 +15,21 @@ python -m venv .venv
 
 Set `DAYTONA_API_KEY` and `NOSANA_API_KEY` in your server environment. The Nosana key
 needs `inference:use` permission and usable credits. See `.env.example` for optional
-model and snapshot settings. Values are not loaded automatically from `.env`.
+model and snapshot settings. Values are not loaded automatically from `.env`;
+`.env` is gitignored, so you can keep keys there and export them at launch.
 Never commit keys or enter them in a public UI.
 
 ```sh
+set -a; source .env; set +a
 .venv/bin/streamlit run patchpilot/ui.py --server.address 127.0.0.1
 ```
 
 The app checks the Nosana model list and Daytona read-only API access when keys are
 present. These checks do not prove a sandbox can run or inference credits are usable;
-the run itself provides that evidence. Choose `NOSANA_MODEL` explicitly for a
-rehearsed demo. Otherwise the first advertised model is tried; incompatible or
+the run itself provides that evidence. Set `NOSANA_MODEL` to a chat model. Otherwise
+the first advertised model is tried, and Nosana currently lists the embedding model
+`nvidia/nemotron-3-embed-1b` first, which fails with `400 Bad Request` on chat
+completions. The working demo uses `NOSANA_MODEL=qwen/qwen3.8-27b`. Incompatible or
 unavailable chat models surface as errors. Provider checks can be refreshed in the UI.
 
 Press **Repair demo bug**. The original fixture is uploaded to a fresh sandbox,
@@ -60,6 +64,9 @@ loopback; authenticate access before exposing a server that spends provider cred
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+Run the tests in a shell without `.env` exported: with `NOSANA_MODEL` set,
+`test_nosana_empty_model_list` fails because the configured model check runs first.
+
 Unit tests use explicitly labeled provider doubles for verdicts, patch constraints,
 unchanged tests, cleanup, errors and the one-attempt limit. Adapter tests use HTTP
 and SDK doubles; these do not establish live sponsor integration success.
@@ -67,7 +74,15 @@ and SDK doubles; these do not establish live sponsor integration success.
 The stable Daytona SDK is pinned and its interfaces checked against the installed
 version. Live acceptance and the required recorded walkthrough need valid provider
 credentials. No genuine end-to-end repair or video is claimed by the offline tests.
-Before submission, run a real repair, check red baseline and green verification,
-save the evidence, and record a credential-free 90–120-second walkthrough. Also
-check non-fix, invalid edit, provider failure and already-passing baseline paths.
+
+**Live status (31 October 2026):** a manual run against real Daytona and Nosana
+(`qwen/qwen3.8-27b`) completed the full repair cycle and was reported working by the
+operator. Run evidence was not saved to the repository. Two issues found during
+live runs are fixed or documented here: the default model selection picking an
+embedding model (set `NOSANA_MODEL`), and the model returning `edits` as a single
+object rather than a one-item list (the prompt now specifies the array shape).
+
+Still to do before submission: save the evidence from a real repair, record a
+credential-free 90–120-second walkthrough, and check the non-fix, invalid edit,
+provider failure and already-passing baseline paths live.
 Product deployment and a landing page are deferred by the spec.
