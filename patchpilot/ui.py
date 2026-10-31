@@ -5,20 +5,28 @@ import os
 
 import streamlit as st
 
+from patchpilot import view
 from patchpilot.core import execute, sources
 from patchpilot.providers import DaytonaSandbox, NosanaModel, redact
 
-st.set_page_config(page_title="PatchPilot", page_icon="🛠", layout="wide")
-st.caption("PATCHPILOT / SEEDED PYTHON REPAIR DEMO")
-st.title("A failing test. A proposed fix. The evidence.")
-st.write("Daytona runs the code. Nosana proposes one constrained edit. You review the result.")
-st.info("Seeded demo defect: a discount formula is intentionally wrong. A price of 100 with a 20% discount must produce 80.")
+PROGRESS = {
+    "REPRODUCING": "Reproducing the failure in a fresh Daytona sandbox…",
+    "PROPOSING": "Requesting one repair from Nosana…",
+    "APPLYING": "Validating and applying the edit…",
+    "VERIFYING": "Rerunning the identical tests…",
+}
+
+st.set_page_config(page_title="PatchPilot", page_icon=str(view.STATIC / "patchpilot-logo.svg"), layout="wide")
+st.logo(str(view.STATIC / "patchpilot-lockup.svg"), size="large")
+st.html(view.style())
+st.html(view.hero())
 with st.expander("View original implementation and read-only tests"):
     for path, text in sources().items():
         st.caption(path)
         st.code(text, language="python")
 
 missing = [name for name in ("DAYTONA_API_KEY", "NOSANA_API_KEY") if not os.environ.get(name)]
+st.html(view.section_heading("Run", "Repair the seeded bug."))
 if missing:
     st.warning("Configure server environment variables: " + ", ".join(missing))
 
@@ -46,50 +54,67 @@ model = None
 if not missing:
     with st.spinner("Checking provider access…"):
         checks, model = check_access()
-    with st.expander("Provider access checks", expanded=any("error" in k for k in checks)):
-        st.json(checks)
-    if st.button("Refresh provider checks"):
+    st.html(view.provider_chips(checks))
+    if any("error" in key for key in checks):
+        with st.expander("Provider check details", expanded=True):
+            st.json(checks)
+
+with st.container(horizontal=True, gap="small"):
+    repair = st.button("Repair demo bug", type="primary", disabled=bool(missing))
+    if not missing and st.button("Refresh provider checks"):
         check_access.clear()
         st.rerun()
 
-if st.button("Repair demo bug", type="primary", disabled=bool(missing)):
+if repair:
     # Replace the latest run; no history database, automatic retries or API service.
     with st.status("Starting fresh sandbox…", expanded=True) as status:
+        stages = []
+        tracker = st.empty()
+        tracker.html(view.stage_tracker(stages))
+
         def progress(state):
-            status.update(label=state.replace("_", " "))
-            st.write(state.replace("_", " ").capitalize())
+            stages.append(state)
+            status.update(label=PROGRESS.get(state, state.replace("_", " ").capitalize()))
+            tracker.html(view.stage_tracker(stages))
+
         run = execute(DaytonaSandbox(), model, progress, redact)
         st.session_state["latest_run"] = run
-        status.update(label=run["state"].replace("_", " "),
+        status.update(label=run["state"].replace("_", " ").capitalize(),
                       state="error" if run["state"] == "ERROR" else "complete", expanded=False)
 
 run = st.session_state.get("latest_run")
-if run:
-    st.divider()
-    st.subheader(run["state"].replace("_", " "))
-    st.caption(f"Run {run['id']} · Sandbox {run['sandbox_id'] or 'not created'}")
+if not run:
+    st.html(view.empty_state())
+else:
+    st.html(view.verdict_banner(run))
     if run["error"]:
         st.error(run["error"])
     if run["cleanup_error"]:
         st.warning("Sandbox cleanup failed. Retain the sandbox ID above and delete it in Daytona. " + run["cleanup_error"])
-    elif run["cleanup_complete"]:
-        st.caption("Sandbox cleanup completed (or no sandbox was created). Evidence is retained below.")
+    st.html(view.stage_tracker(run["stages"]))
+
     if run["proposal"]:
-        st.subheader("AI proposal")
-        st.text(run["proposal"]["diagnosis"])
-        st.text(run["proposal"]["explanation"])
-        st.code(run["diff"], language="diff")
-    before, after = st.columns(2)
-    for column, label, result in ((before, "Before repair", run["baseline"]),
-                                  (after, "After repair", run["verification"])):
-        with column:
-            st.subheader(label)
+        st.html(view.section_heading("Nosana proposal", "Diagnosis and edit."))
+        with st.container(key="pp-proposal"):
+            st.html(view.panel_label("Diagnosis"))
+            st.text(run["proposal"]["diagnosis"])
+            st.html(view.panel_label("Explanation"))
+            st.text(run["proposal"]["explanation"])
+            st.html(view.panel_label("Unified diff", view.chip("discount.py only")))
+            st.code(run["diff"], language="diff")
+
+    st.html(view.section_heading("Daytona evidence", "Before and after."))
+    before, after = st.columns(2, gap="medium")
+    for column, key, label, result in ((before, "pp-before", "Before repair", run["baseline"]),
+                                       (after, "pp-after", "After repair", run["verification"])):
+        with column, st.container(key=key):
+            st.html(view.panel_label(label, view.exit_chip(result["exit_code"]) if result else ""))
             if result:
                 st.code(result["command"], language="bash")
-                st.caption(f"Exit code: {result['exit_code']}")
                 st.code(result["output"], language="text")
             else:
-                st.write("Not executed or no valid completed result.")
+                st.html('<p class="pp-muted">Not executed or no valid completed result.</p>')
+
     if run["trace"]:
         with st.expander("Real inference request and response evidence"):
             st.json(run["trace"])

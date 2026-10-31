@@ -24,6 +24,9 @@ set -a; source .env; set +a
 .venv/bin/streamlit run patchpilot/ui.py --server.address 127.0.0.1
 ```
 
+The dark theme matching the landing page lives in `.streamlit/config.toml` and loads when
+launching from the checkout root; `patchpilot/static/style.css` adds the remaining styling.
+
 The app checks the Nosana model list and Daytona read-only API access when keys are
 present. These checks do not prove a sandbox can run or inference credits are usable;
 the run itself provides that evidence. Set `NOSANA_MODEL` to a chat model. Otherwise

@@ -162,9 +162,10 @@ class UITests(unittest.TestCase):
             self.assertTrue(app.button[0].disabled)
             self.assertIn("DAYTONA_API_KEY", app.warning[0].value)
 
-    def test_single_screen_repair_with_explicit_test_doubles(self):
+    def repair_with_doubles(self, box, model):
+        import streamlit as st
         from streamlit.testing.v1 import AppTest
-        box, model = Sandbox([RED, GREEN]), Model()
+        st.cache_resource.clear()  # check_access caches the model double across AppTest runs
         model.discover = lambda: "test-double"
         box.connect = lambda: type("Client", (), {"list": lambda self, **kw: iter([])})()
         with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-only", "NOSANA_API_KEY": "test-only"}), \
@@ -174,8 +175,21 @@ class UITests(unittest.TestCase):
             repair = next(button for button in app.button if button.label == "Repair demo bug")
             repair.click().run(timeout=15)
             self.assertFalse(app.exception)
-            self.assertEqual(app.session_state["latest_run"]["state"], "VERIFIED")
             self.assertTrue(box.closed)
+            return app
+
+    def test_single_screen_repair_with_explicit_test_doubles(self):
+        app = self.repair_with_doubles(Sandbox([RED, GREEN]), Model())
+        self.assertEqual(app.session_state["latest_run"]["state"], "VERIFIED")
+
+    def test_non_fix_and_error_runs_render(self):
+        app = self.repair_with_doubles(Sandbox([RED, RED]), Model())
+        self.assertEqual(app.session_state["latest_run"]["state"], "NOT_VERIFIED")
+        payload = copy.deepcopy(FIX)
+        payload["edits"][0]["path"] = "test_discount.py"
+        app = self.repair_with_doubles(Sandbox([RED]), Model(payload))
+        self.assertEqual(app.session_state["latest_run"]["state"], "ERROR")
+        self.assertIn("tests are read-only", app.error[0].value)
 
 
 if __name__ == "__main__":
